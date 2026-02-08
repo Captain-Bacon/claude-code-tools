@@ -224,9 +224,14 @@ The status line is the persistent bar at the bottom of Claude Code. You can conf
 
 **Path:** `status-line/context-status-line.sh`
 
-Displays: `working-directory | Model Name | Context: 73% remaining`
+Does two things:
 
-Also persists the context percentage to `~/.claude/state/context-remaining.txt`, which other tools like the [Post-Commit Reflect](#post-commit-reflect) hook can read. This is what makes the hook context-aware — without the status line writing this file, the hook defaults to assuming 100% remaining.
+1. **Displays** `working-directory | Model Name | Context: 73% remaining` in the status bar
+1. **Persists** the context percentage to `~/.claude/state/context-remaining.txt` on every update
+
+That second part is critical. The [Post-Commit Reflect](#post-commit-reflect) hook reads that file to decide whether Claude should fix issues now or just capture them as tasks. Without the status line writing this file, the hook defaults to assuming 100% context remaining and will always tell Claude to fix things inline — which is exactly what you don't want when context is running low.
+
+**If you use the post-commit hook, you need this status line active** even if you don't care about the status bar display itself.
 
 ### Installing the Status Line
 
