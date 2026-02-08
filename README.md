@@ -2,10 +2,12 @@
 
 Custom skills, hooks, and configurations for [Claude Code](https://docs.anthropic.com/en/docs/claude-code).
 
+These tools form a **session lifecycle** for working with Claude Code on real projects. They're designed to work with [beads](https://github.com/steveyegge/beads) — a git-backed issue tracker built for coding agents — but the individual pieces are useful standalone too.
+
 ## What's Here
 
 | Tool | Type | What it does |
-|------|------|-------------|
+| ---- | ---- | ------------ |
 | [Handover](#handover) | Skill | Structured session handover to prevent context loss between conversations |
 | [Ready Check](#ready-check) | Skill | Forces reflection on understanding before acting — catches mechanical pattern-matching |
 | [Post-Commit Reflect](#post-commit-reflect) | Hook | Prompts Claude to reflect after each git commit, adapts behavior based on remaining context |
@@ -13,16 +15,90 @@ Custom skills, hooks, and configurations for [Claude Code](https://docs.anthropi
 
 ---
 
+## The Workflow
+
+Claude Code conversations have a hard limit: the context window. Every message, every file read, every tool call eats into it. When it runs out, the session is over and the next Claude starts completely blank.
+
+These tools turn that constraint into a structured workflow instead of a cliff edge.
+
+### Session Lifecycle
+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  SESSION START                                          │
+│                                                         │
+│  Claude reads CLAUDE.md (automatic)                     │
+│  Tell Claude to check beads: "bd ready" or "bd list"    │
+│  Claude sees what work is available                     │
+│                                                         │
+│  /ready-check  →  Orientation Mode                      │
+│  Verifies understanding against actual code             │
+│  Checks load-bearing context from previous sessions     │
+│  Surfaces verification gaps                             │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  PICK A TASK                                            │
+│                                                         │
+│  Claude reads the bead for a task                       │
+│  /ready-check  →  Implementation Mode (or automatic)    │
+│  Traces from user goal → implementation                 │
+│  Identifies unknowns, asks only what it can't decide    │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  DO THE WORK                                            │
+│                                                         │
+│  Status bar shows context % remaining throughout        │
+│  Write code, iterate, test                              │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  ~50% CONTEXT  →  COMMIT                                │
+│                                                         │
+│  Ask Claude to commit                                   │
+│  Post-commit hook fires automatically                   │
+│  Claude reflects: assumptions? fragile? do differently? │
+│  If substantive → fix now (context permits)             │
+└────────────────────┬────────────────────────────────────┘
+                     │
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  SESSION END  →  /handover                              │
+│                                                         │
+│  Structured review of everything that happened          │
+│  Updates CLAUDE.md with new critical knowledge          │
+│  Creates beads for unfinished work                      │
+│  Logs fragility and shipped assumptions                 │
+│  Syncs beads                                            │
+│                                                         │
+│  Next Claude starts blank but has:                      │
+│    • Updated CLAUDE.md (reads automatically)            │
+│    • Beads with full context (queries on start)         │
+│    • Clean git history                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Why This Matters
+
+Without this, sessions end one of two ways: Claude hits the context wall mid-task and the conversation compacts or dies, or you start a new session and the next Claude has no idea what happened. Knowledge evaporates. Work gets repeated. Bugs get reintroduced.
+
+This workflow makes each session self-contained: commit the work, reflect on it, hand over context, pick up cleanly next time.
+
+---
+
 ## Skills
 
 Skills are markdown files that define reusable prompts Claude can execute. They live in a `skills/` folder and are invoked with `/skill-name`.
 
-### Installation
+### Installing Skills
 
 **Global** (available in all projects):
 
 ```bash
-# Copy the skill folder into your global skills directory
 cp -r skills/handover ~/.claude/skills/
 cp -r skills/ready-check ~/.claude/skills/
 ```
@@ -30,7 +106,6 @@ cp -r skills/ready-check ~/.claude/skills/
 **Per-project** (available only in that project):
 
 ```bash
-# Copy into the project's .claude directory
 cp -r skills/handover your-project/.claude/skills/
 cp -r skills/ready-check your-project/.claude/skills/
 ```
@@ -47,11 +122,12 @@ After installation, invoke with `/handover` or `/ready-check` in any Claude Code
 Structured session handover protocol. Use when ending a session to ensure the next Claude instance doesn't repeat your mistakes, miss your discoveries, or break what you fixed.
 
 Walks through:
+
 - What changed and how the system behaves differently
 - What was learned, including dead ends
 - Unfinished work, fragile code, shipped assumptions
-- Artifact verification (was it tested? does it work?)
-- Produces actionable output: updates to CLAUDE.md, new issues/tasks, debt log entries
+- Artifact verification — was it tested? does it actually work?
+- Produces actionable output: updates to CLAUDE.md, new beads/issues, debt log entries
 
 The core premise: **this conversation will vanish.** Everything Claude knows that isn't written to a file is lost. This skill forces that reckoning.
 
@@ -65,12 +141,14 @@ The core premise: **this conversation will vanish.** Everything Claude knows tha
 Forces Claude to verify understanding before acting. Two modes:
 
 **Orientation Mode** — use at session start or context switches:
+
 - Verify project understanding against actual code
 - Identify and check load-bearing context
 - Surface verification gaps from previous handovers
 - Survey available work
 
 **Implementation Mode** — use before non-trivial builds:
+
 - Traceability test: can you trace from user goal to this implementation?
 - Confidence check: genuine understanding vs. pattern-matching?
 - Categorize unknowns into implementation decisions (Claude decides) vs. behavior decisions (user decides)
@@ -92,10 +170,11 @@ Hooks are scripts that run in response to Claude Code lifecycle events (e.g., af
 After every `git commit`, prompts Claude to pause and reflect:
 
 1. Assumptions left unquestioned?
-2. Anything fragile or incomplete?
-3. What would you do differently?
+1. Anything fragile or incomplete?
+1. What would you do differently?
 
 **Context-aware behavior:**
+
 - **Above 40% context remaining** — if the reflection is substantive, fix it now (if quick) or create a task
 - **Below 40% context remaining** — don't fix anything, just capture it as a task (preserves remaining context for essential work)
 
@@ -103,22 +182,17 @@ After every `git commit`, prompts Claude to pause and reflect:
 
 **Requires:** The [Context Status Line](#context-status-line) to be active (writes context % to `~/.claude/state/context-remaining.txt`).
 
-### Installation
+### Installing the Hook
 
-1. Copy the script:
+1. Copy the script and create the state directory:
 
 ```bash
 cp hooks/post-commit-reflect/post-commit-reflect.sh ~/.claude/hooks/
 chmod +x ~/.claude/hooks/post-commit-reflect.sh
-```
-
-2. Create the state directory:
-
-```bash
 mkdir -p ~/.claude/state
 ```
 
-3. Add to your `~/.claude/settings.json` (or project-level `.claude/settings.json`):
+2. Add to your `~/.claude/settings.json` or project-level `.claude/settings.json`:
 
 ```json
 {
@@ -152,9 +226,9 @@ The status line is the persistent bar at the bottom of Claude Code. You can conf
 
 Displays: `working-directory | Model Name | Context: 73% remaining`
 
-Also persists the context percentage to `~/.claude/state/context-remaining.txt`, which other tools (like [Post-Commit Reflect](#post-commit-reflect)) can read.
+Also persists the context percentage to `~/.claude/state/context-remaining.txt`, which other tools like the [Post-Commit Reflect](#post-commit-reflect) hook can read. This is what makes the hook context-aware — without the status line writing this file, the hook defaults to assuming 100% remaining.
 
-### Installation
+### Installing the Status Line
 
 **Option A — Inline** (single line in settings, no external file):
 
@@ -171,14 +245,12 @@ Add to `~/.claude/settings.json`:
 
 **Option B — External script** (cleaner, easier to edit):
 
-1. Copy the script:
-
 ```bash
 cp status-line/context-status-line.sh ~/.claude/
 chmod +x ~/.claude/context-status-line.sh
 ```
 
-2. Add to `~/.claude/settings.json`:
+Then add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -193,24 +265,42 @@ chmod +x ~/.claude/context-status-line.sh
 
 ---
 
-## How These Work Together
+## How the Pieces Connect
 
-The status line and post-commit hook are designed as a pair:
-
-```
+```text
 Status Line (runs continuously)
     │
-    ├── Displays context % in status bar
-    └── Writes context % to ~/.claude/state/context-remaining.txt
+    ├── Displays context % in the status bar
+    └── Writes % to ~/.claude/state/context-remaining.txt
                                     │
-Post-Commit Hook (runs after git commit)
+Post-Commit Hook (fires on git commit)
     │
     ├── Reads context % from that file
-    ├── If > 40%: reflect and fix now
-    └── If < 40%: reflect but just capture, don't burn context
+    ├── > 40%: reflect → fix now if quick
+    └── < 40%: reflect → just capture as task, preserve context
+                                    │
+Ready Check (invoked at session start / before implementation)
+    │
+    ├── Orientation: verify understanding, check beads, survey work
+    └── Implementation: trace goals, identify unknowns, checkpoint
+                                    │
+Handover (invoked at session end)
+    │
+    ├── Reviews everything that happened
+    ├── Updates CLAUDE.md
+    ├── Creates beads for unfinished work
+    └── Next session picks up cleanly
 ```
 
-The skills (handover, ready-check) are standalone — use them independently or together.
+All four tools are independent — use any combination. But together they cover the full session lifecycle: orient, work, reflect, hand over.
+
+---
+
+## Beads
+
+These tools are designed to pair with [beads](https://github.com/steveyegge/beads), Steve Yegge's git-backed issue tracker for coding agents. Beads gives Claude persistent memory across sessions — tasks, context, dependencies — stored right in your git repo.
+
+You don't need beads to use these tools. But the workflow is strongest when Claude can read its task list at session start, create new tasks during handover, and track what's done vs. what's left across sessions.
 
 ---
 
