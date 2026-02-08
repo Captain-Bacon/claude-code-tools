@@ -11,7 +11,7 @@ These tools form a **session lifecycle** for working with Claude Code on real pr
 | [Handover](#handover) | Skill | Structured session handover to prevent context loss between conversations |
 | [Ready Check](#ready-check) | Skill | Forces reflection on understanding before acting — catches mechanical pattern-matching |
 | [Post-Commit Reflect](#post-commit-reflect) | Hook | Prompts Claude to reflect after each git commit, adapts behavior based on remaining context |
-| [Context Status Line](#context-status-line) | Status Line | Shows model, directory, and context window % remaining in the status bar |
+| [Context Status Line](#context-status-line) | Status Line | Tracks context window % remaining — displays it in the status bar and persists it to disk for the post-commit hook |
 
 ---
 
@@ -71,13 +71,12 @@ These tools turn that constraint into a structured workflow instead of a cliff e
 │                                                         │
 │  Structured review of everything that happened          │
 │  Updates CLAUDE.md with new critical knowledge          │
-│  Creates beads for unfinished work                      │
+│  Creates tasks for unfinished work                      │
 │  Logs fragility and shipped assumptions                 │
-│  Syncs beads                                            │
 │                                                         │
 │  Next Claude starts blank but has:                      │
 │    • Updated CLAUDE.md (reads automatically)            │
-│    • Beads with full context (queries on start)         │
+│    • Tasks with full context (if using beads or similar)│
 │    • Clean git history                                  │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -272,29 +271,33 @@ Then add to `~/.claude/settings.json`:
 
 ## How the Pieces Connect
 
+**Data flow** — the status line and hook are directly connected:
+
 ```text
 Status Line (runs continuously)
     │
     ├── Displays context % in the status bar
     └── Writes % to ~/.claude/state/context-remaining.txt
                                     │
+                                    ▼
 Post-Commit Hook (fires on git commit)
     │
     ├── Reads context % from that file
     ├── > 40%: reflect → fix now if quick
     └── < 40%: reflect → just capture as task, preserve context
-                                    │
-Ready Check (invoked at session start / before implementation)
-    │
-    ├── Orientation: verify understanding, check beads, survey work
+```
+
+**Workflow only** — these don't share data with the above, they're used at different points in the session:
+
+```text
+Ready Check (/ready-check)
+    ├── Orientation: verify understanding, survey work
     └── Implementation: trace goals, identify unknowns, checkpoint
-                                    │
-Handover (invoked at session end)
-    │
+
+Handover (/handover)
     ├── Reviews everything that happened
     ├── Updates CLAUDE.md
-    ├── Creates beads for unfinished work
-    └── Next session picks up cleanly
+    └── Creates tasks for unfinished work
 ```
 
 All four tools are independent — use any combination. But together they cover the full session lifecycle: orient, work, reflect, hand over.
@@ -305,7 +308,9 @@ All four tools are independent — use any combination. But together they cover 
 
 These tools are designed to pair with [beads](https://github.com/steveyegge/beads), Steve Yegge's git-backed issue tracker for coding agents. Beads gives Claude persistent memory across sessions — tasks, context, dependencies — stored right in your git repo.
 
-You don't need beads to use these tools. But the workflow is strongest when Claude can read its task list at session start, create new tasks during handover, and track what's done vs. what's left across sessions.
+The **status line** and **post-commit hook** work fine without beads — they only depend on each other. The **ready-check** skill references beads commands but degrades gracefully without them.
+
+The **handover** skill references beads throughout (`bd ready`, `bd sync`, "create beads for unfinished work"). Without beads installed, Claude will still run the handover review and update CLAUDE.md, but the task-creation and sync parts won't do anything. If you're not using beads, you'd want to adapt those sections to whatever task tracking you do use.
 
 ---
 
